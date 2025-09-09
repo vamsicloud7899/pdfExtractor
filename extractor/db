@@ -1,0 +1,72 @@
+from __future__ import annotations
+import sqlite3
+from pathlib import Path
+from typing import Iterable, Tuple
+
+SCHEMA = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT NOT NULL,
+  uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS extractions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT,
+  confidence REAL,
+  method TEXT,
+  notes TEXT,
+  FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+"""
+
+def get_conn(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys=ON;")
+    return conn
+
+def init_db(db_path: Path) -> None:
+    conn = get_conn(db_path)
+    try:
+        with conn:
+            for stmt in SCHEMA.strip().split(";"):
+                if stmt.strip():
+                    conn.execute(stmt)
+    finally:
+        conn.close()
+
+def insert_document(db_path: Path, filename: str) -> int:
+    conn = get_conn(db_path)
+    try:
+        with conn:
+            cur = conn.execute("INSERT INTO documents(filename) VALUES(?)", (filename,))
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+def insert_extractions(db_path: Path, document_id: int, rows: Iterable[Tuple[str,str,float,str,str]]) -> None:
+    conn = get_conn(db_path)
+    try:
+        with conn:
+            conn.executemany(
+                "INSERT INTO extractions(document_id, key, value, confidence, method, notes) VALUES(?,?,?,?,?,?)",
+                rows
+            )
+    finally:
+        conn.close()
+
+def fetch_latest(db_path: Path, limit: int = 50):
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute("""
+            SELECT d.id, d.filename, d.uploaded_at, e.key, e.value, e.confidence, e.method
+            FROM documents d
+            LEFT JOIN extractions e ON e.document_id = d.id
+            ORDER BY d.id DESC, e.key ASC
+            LIMIT ?
+        """, (limit,))
+        return cur.fetchall()
+    finally:
+        conn.close()
