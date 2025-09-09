@@ -1,0 +1,25 @@
+from __future__ import annotations
+import yaml
+from pathlib import Path
+from typing import Dict, List
+
+class FieldConfig:
+    def __init__(self, name: str, aliases: List[str], patterns: List[str]):
+        self.name = name
+        self.aliases = aliases
+        self.patterns = patterns
+
+class AppConfig:
+    def __init__(self, cfg: Dict):
+        self.keys: Dict[str, FieldConfig] = {}
+        for k, v in cfg.get("keys", {}).items():
+            self.keys[k] = FieldConfig(
+                name=k,
+                aliases=v.get("aliases", []),
+                patterns=v.get("patterns", []),
+            )
+
+def load_config(path: Path) -> AppConfig:
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
+    return AppConfig(data)
