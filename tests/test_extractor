@@ -1,0 +1,23 @@
+from pathlib import Path
+from extractor.config import load_config
+from extractor.pdf_extract import extract_keys
+
+FIXT = Path(__file__).parent / "fixtures"
+
+def test_basic_extraction_on_sample_form():
+    cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "fields.yaml")
+    pdf_path = FIXT / "FUNDS RECALL FORM_filled.pdf"
+    res = extract_keys(pdf_path, cfg)
+    # We expect at least a couple of keys to be detected via regex text
+    assert isinstance(res, dict)
+    # These forms usually contain "Customer Name" and "Branch Name" in text
+    assert "customer_name" in res or "branch_name" in res
+
+def test_acroform_or_text_on_fnol():
+    cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "fields.yaml")
+    pdf_path = FIXT / "FNOL-form-MOTOR-v10_filled.pdf"
+    res = extract_keys(pdf_path, cfg)
+    assert isinstance(res, dict)
+    # We should find at least one common field (email or phone or name)
+    keys = set(res.keys())
+    assert keys & {"customer_name", "email", "phone", "id_number", "account_number"}
