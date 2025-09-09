@@ -1,0 +1,101 @@
+from __future__ import annotations
+from pathlib import Path
+from typing import Dict, Tuple, List
+import re
+
+from pypdf import PdfReader
+import pdfplumber
+
+from .config import AppConfig
+
+Extract = Tuple[str, float, str, str]  # value, confidence, method, notes
+
+def _clean(s: str) -> str:
+    s = s.strip()
+    # Remove trailing dotted lines etc.
+    s = re.sub(r"[_.]{3,}$", "", s).strip()
+    return s
+
+def extract_with_form_fields(pdf_path: Path, cfg: AppConfig) -> Dict[str, Extract]:
+    out: Dict[str, Extract] = {}
+    try:
+        reader = PdfReader(str(pdf_path))
+        fields = reader.get_fields() or {}
+    except Exception as e:
+        return out  # fallback to text
+    if not fields:
+        return out
+
+    # Build a loose alias map: any field whose name contains an alias goes to that key
+    alias_map = {}
+    for key, fc in cfg.keys.items():
+        for al in fc.aliases + [key]:
+            alias_map[al.lower()] = key
+
+    # Try to map field names/values
+    for fname, fobj in fields.items():
+        raw_name = str(fname)
+        val = fobj.get("/V") if isinstance(fobj, dict) else getattr(fobj, "value", None)
+        if isinstance(val, bytes):
+            try:
+                val = val.decode("utf-8", "ignore")
+            except Exception:
+                val = str(val)
+        if val is None:
+            continue
+        val_s = _clean(str(val))
+
+        lname = raw_name.lower()
+        # find best alias hit
+        hit_key = None
+        for al, target_key in alias_map.items():
+            if al in lname:
+                hit_key = target_key
+                break
+        if hit_key and val_s and hit_key not in out:
+            out[hit_key] = (val_s, 0.9, "acroform", f"matched field: {raw_name}")
+    return out
+
+def extract_with_regex(pdf_path: Path, cfg: AppConfig) -> Dict[str, Extract]:
+    out: Dict[str, Extract] = {}
+    try:
+        full_text = []
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page in pdf.pages:
+                txt = page.extract_text() or ""
+                full_text.append(txt)
+        text = "\n".join(full_text)
+    except Exception as e:
+        return out
+
+    for key, fc in cfg.keys.items():
+        if key in out:
+            continue
+        found = False
+        for pat in fc.patterns:
+            m = re.search(pat, text)
+            if not m:
+                continue
+            val = m.groupdict().get("val") if "val" in m.groupdict() else m.group(0)
+            if val:
+                out[key] = (_clean(val), 0.6, "regex", f"pattern: {pat}")
+                found = True
+                break
+        if not found:
+            # Weak heuristic: find a line starting with alias
+            for al in fc.aliases:
+                m = re.search(rf"(?i){re.escape(al)}[:\s]+(.+)", text)
+                if m:
+                    out[key] = (_clean(m.group(1)), 0.4, "heuristic", f"alias: {al}")
+                    break
+    return out
+
+def extract_keys(pdf_path: Path, cfg: AppConfig) -> Dict[str, Extract]:
+    # 1) try form fields
+    out = extract_with_form_fields(pdf_path, cfg)
+    # 2) backfill with regex/heuristics
+    rx = extract_with_regex(pdf_path, cfg)
+    for k, v in rx.items():
+        if k not in out:
+            out[k] = v
+    return out
